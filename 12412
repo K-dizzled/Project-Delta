@@ -163,7 +163,7 @@ int main()
             absdiff(prev, next, diffImage);
  
             imshow("title", diffImage);
-            waitKey(0);
+            waitKey(20);
  
             prev = next.clone();
  

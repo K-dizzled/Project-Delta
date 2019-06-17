@@ -1,0 +1,29 @@
+M = [0, 0, 255, 0, 0, 255,
+             0, 0, 255, 0, 0, 255];
+ 
+        Mat next(480, 640, CV_8UC3);
+ 
+ 
+        for (int k = 0; k < next.rows; ++k)
+        {
+            for(int j  = 0; j < next.cols; ++j)
+            {
+                auto vectorCoord = 3 * (k * next.cools + j);
+                next.at<uchar>(k, 3 * j) = (*screenBuf) [vectorCoord + 2];
+                next.at<uchar>(k, 3 * j + 1) = (*screenBuf) [vectorCoord + 1];
+                next.at<uchar>(k, 3 * j + 2) = (*screenBuf) [vectorCoord];
+            }
+        }
+ 
+        Mat diffImage;
+        absdiff(prev, next, diffImage);
+ 
+        mask.at<unsigned char>(k, 3 * j) = 255;
+ 
+        vector<Point> pts;
+        vector<int> labels;
+        int n_labels = cv::partition(pts, labels, [params](const Point& lhs, const Point& rhs){
+ 
+            return are_points_close;
+        }
+    };

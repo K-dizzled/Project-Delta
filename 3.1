@@ -1,0 +1,319 @@
+#include <ViZDoom.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <ctime>
+#include <chrono>
+#include <thread>
+#include <cv.h>
+
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
+
+void sleep(unsigned int time){
+    std::this_thread::sleep_for(std::chrono::milliseconds(time));
+}
+
+using namespace vizdoom;
+
+using namespace cv;
+
+int main()
+{
+    Mat next(480, 640, CV_8UC3), prev(480, 640, CV_8UC3), diffImage;
+
+
+
+    namedWindow("title", WINDOW_AUTOSIZE);
+
+    Ptr <FeatureDetector> detector = ORB::create(10000);
+
+    std::cout << "\n\nBASIC EXAMPLE\n\n";
+
+    // Create DoomGame instance. It will run the game and communicate with you.
+    DoomGame *game = new DoomGame();
+
+    // Sets path to vizdoom engine executive which will be spawned as a separate process. Default is "./vizdoom".
+    game->setViZDoomPath("/headless/base/ViZDoom/bin/vizdoom");
+
+    // Sets path to doom2 iwad resource file which contains the actual doom game-> Default is "./doom2.wad".
+    game->setDoomGamePath("/headless/base/ViZDoom/bin/freedoom2.wad");
+    //game->setDoomGamePath("../../bin/doom2.wad");      // Not provided with environment due to licences.
+
+    // Sets path to additional resources iwad file which is basically your scenario iwad.
+    // If not specified default doom2 maps will be used and it's pretty much useless... unless you want to play doom.
+    game->setDoomScenarioPath("//headless/base/ViZDoom/scenarios/basic.wad");
+
+    // Set map to start (scenario .wad files can contain many maps).
+    game->setDoomMap("map01");
+
+    // Sets resolution. Default is 320X240
+    game->setScreenResolution(RES_640X480);
+
+    // Sets the screen buffer format. Not used here but now you can change it. Default is CRCGCB.
+    game->setScreenFormat(RGB24);
+
+    // Sets other rendering options
+    game->setRenderHud(false);
+    game->setRenderMinimalHud(false); // If hud is enabled
+    game->setRenderCrosshair(true);
+    game->setRenderWeapon(false);
+    game->setRenderDecals(false);
+    game->setRenderParticles(false);
+    game->setRenderEffectsSprites(false);
+    game->setRenderMessages(false);
+    game->setRenderCorpses(false);
+
+    // Adds buttons that will be allowed.
+    game->addAvailableButton(MOVE_LEFT);
+    game->addAvailableButton(MOVE_RIGHT);
+    game->addAvailableButton(ATTACK);
+
+    // Adds game variables that will be included in state.
+    game->addAvailableGameVariable(AMMO2);
+
+    // Causes episodes to finish after 200 tics (actions)
+    game->setEpisodeTimeout(200);
+
+    // Makes episodes start after 10 tics (~after raising the weapon)
+    game->setEpisodeStartTime(10);
+
+    // Makes the window appear (turned on by default)
+    game->setWindowVisible(true);
+
+    // Turns on the sound. (turned off by default)
+    game->setSoundEnabled(false);
+
+    // Sets ViZDoom mode (PLAYER, ASYNC_PLAYER, SPECTATOR, ASYNC_SPECTATOR, PLAYER mode is default)
+    game->setMode(PLAYER);
+
+    // Enables engine output to console.
+    //game->setConsoleEnabled(true);
+
+    // Initialize the game. Further configuration won't take any effect from now on.
+    game->init();
+
+
+    // Define some actions. Each list entry corresponds to declared buttons:
+    // MOVE_LEFT, MOVE_RIGHT, ATTACK
+    // game.getAvailableButtonsSize() can be used to check the number of available buttons.
+    // more combinations are naturally possible but only 3 are included for transparency when watching.
+    std::vector<double> actions[3];
+    actions[0] = {1, 0, 0};
+    actions[1] = {0, 1, 0};
+    actions[2] = {0, 0, 1};
+
+    std::srand(time(0));
+
+    // Run this many episodes
+    int episodes = 10;
+
+    // Sets time that will pause the engine after each action.
+    // Without this everything would go too fast for you to keep track of what's happening.
+    unsigned int sleepTime = 1000 / DEFAULT_TICRATE; // = 28
+    namedWindow( "Display window", WINDOW_AUTOSIZE );
+
+    for (int i = 0; i < episodes; ++i) {
+
+        std::cout << "Episode #" << i + 1 << "\n";
+
+        // Starts a new episode. It is not needed right after init() but it doesn't cost much and the loop is nicer.
+        game->newEpisode();
+
+        while (!game->isEpisodeFinished()) {
+
+            // Get the state
+            GameStatePtr state = game->getState(); // GameStatePtr is std::shared_ptr<GameState>
+
+            // Which consists of:
+            unsigned int n = state->number;
+            std::vector<double> vars = state->gameVariables;
+            BufferPtr screenBuf = state->screenBuffer;
+            BufferPtr depthBuf = state->depthBuffer;
+            BufferPtr labelsBuf = state->labelsBuffer;
+            BufferPtr automapBuf = state->automapBuffer;
+            // BufferPtr is std::shared_ptr<Buffer> where Buffer is std::vector<uint8_t>
+
+            std::vector<Label> labels = state->labels;
+
+            ///opencv block begins
+            {
+                /// reading image from buffer into matrix
+
+                // IMPORTANT: OpenCV uses BGR model to represent colors, not RGB
+
+                for (int k = 0; k < next.rows; ++k) {
+                    for (int j = 0; j < next.cols; ++j) {
+                        auto vectorCoord = 3 * (k * next.cols + j);
+                        // Mapping from image coordinates to coordinates in vector (array)
+
+                        next.at<uchar>(k, 3 * j) = (*screenBuf)[vectorCoord + 2];
+                        next.at<uchar>(k, 3 * j + 1) = (*screenBuf)[vectorCoord + 1];
+                        next.at<uchar>(k, 3 * j + 2) = (*screenBuf)[vectorCoord];
+                    }
+                }
+
+                if (!prev.empty()) {
+
+                    /// feature detection and matching
+
+                    std::vector <KeyPoint>keypoints1, keypoints2;
+
+                    Ptr<FeatureDetector> detector = ORB::create();
+                    detector->detect(prev, keypoints1);
+                    detector->detect(next, keypoints2);
+
+                    Mat descriptor1, descriptor2;
+
+                    Ptr<DescriptorExtractor> extractor = ORB::create();
+                    extractor->compute(prev, keypoints1, descriptor1);
+                    extractor->compute(next, keypoints2, descriptor2);
+
+
+                    std::vector<DMatch> matches;
+                    BFMatcher matcher(NORM_L2, true);
+                    matcher.match(descriptor1, descriptor2, matches);
+
+                    std::vector<DMatch> good_matches;
+                    std::vector<Point2f> featurePoints1;
+                    std::vector<Point2f> featurePoints2;
+
+                    for (DMatch match: matches) {
+                        good_matches.push_back(match);
+                    }
+                    Mat result;
+
+                    //Draw keypoints only: drawKeypoints(next, keypoints2, result);
+                    drawMatches(prev, keypoints1, next, keypoints2, good_matches, result);
+
+                    /// pixel-wise comparison
+
+                    Mat diffImage;
+                    absdiff(prev, next, diffImage);
+
+                    Mat foregroundMask = Mat::zeros(diffImage.rows, diffImage.cols, CV_8UC3);
+
+                    float threshold = 20.0f; // 200.0f works
+                    float dist;
+
+                    for (int k = 0; k < diffImage.rows; ++k) {
+                        for (int j = 0; j < diffImage.cols; ++j) {
+                            cv::Vec3b pix = diffImage.at<cv::Vec3b>(k, j);
+
+                            dist = sqrt(pix[0] * pix[0] + pix[1] * pix[1] + pix[2] * pix[2]);
+
+                            if (dist > threshold) {
+                                foregroundMask.at<unsigned char>(k, 3 * j) = 255;
+                                foregroundMask.at<unsigned char>(k, 3 * j + 1) = 255;
+                                foregroundMask.at<unsigned char>(k, 3 * j + 2) = 255;
+                            }
+                        }
+                    }
+
+                    /// finding clusters
+
+                    /*Mat img;
+
+                    cv::cvtColor(foregroundMask.clone(), img, CV_BGR2GRAY);
+
+                    // Get all non black points
+                    vector<Point> pts;
+                    findNonZero(img, pts);
+
+                    // Define the distance between clusters
+                    int euclidean_distance = 40;
+
+                    // Apply partition
+                    // All pixels within the the given distance will belong to the same cluster
+
+                    vector<int> labels;
+
+                    // With lambda function
+                    int th2 = euclidean_distance * euclidean_distance;
+                    int n_labels = cv::partition(
+                        pts,
+                        labels,
+                        [th2](const Point& lhs, const Point& rhs)
+                        {
+                            return ((lhs.x - rhs.x)*(lhs.x - rhs.x) + (lhs.y - rhs.y)*(lhs.y - rhs.y)) < th2;
+                        }
+                    );
+
+
+                    // Store all points in same cluster, and compute centroids
+                    vector<vector<Point>> clusters(n_labels);
+                    vector<Point> centroids(n_labels, Point(0,0));
+
+                    for (int i = 0; i < pts.size(); ++i)
+                    {
+                        clusters[labels[i]].push_back(pts[i]);
+                        centroids[labels[i]] += pts[i];
+                    }
+                    for (int i = 0; i < n_labels; ++i)
+                    {
+                        centroids[i].x /= clusters[i].size();
+                        centroids[i].y /= clusters[i].size();
+                    }
+
+                    // Draw results
+
+                    // Build a vector of random color, one for each class (label)
+                    vector<Vec3b> colors;
+                    for (int i = 0; i < n_labels; ++i)
+                    {
+                        colors.push_back(Vec3b(rand() & 255, rand() & 255, rand() & 255));
+                    }
+
+                    // Draw the points
+                    Mat3b res(img.rows, img.cols, Vec3b(0, 0, 0));
+                    for (int i = 0; i < pts.size(); ++i)
+                    {
+                        res(pts[i]) = colors[labels[i]];
+                    }
+
+                    // Draw centroids
+                    for (int i = 0; i < n_labels; ++i)
+                    {
+                        circle(res, centroids[i], 3, Scalar(colors[i][0], colors[i][1], colors[i][2]), CV_FILLED);
+                        circle(res, centroids[i], 6, Scalar(255 - colors[i][0], 255 - colors[i][1], 255 - colors[i][2]));
+
+                    }
+
+
+                    if (n_labels == 1)
+                    {
+                        auto a = centroids[0].x;
+                        auto b = centroids[0].y;
+
+                        cout << a << " " << b;
+                    }*/
+
+
+                    imshow("Display window", foregroundMask);
+                    waitKey(40);
+                }
+
+                prev = next.clone();
+            }
+            /// opencv block ends
+
+
+
+            // Make random action and get reward
+            double reward = game->makeAction(actions[std::rand() % game->getAvailableButtonsSize()]);
+
+            if(sleepTime) sleep(sleepTime);
+        }
+
+        std::cout << "Episode finished.\n";
+        std::cout << "Total reward: " << game->getTotalReward() << "\n";
+        std::cout << "************************\n";
+
+    }
+
+    // It will be done automatically in destructor but after close You can init it again with different settings.
+    game->close();
+    delete game;
+}

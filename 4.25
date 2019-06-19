@@ -1,0 +1,237 @@
+#include <ViZDoom.h>
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <ctime>
+#include <algorithm>
+#include <chrono>
+#include <thread>
+#include <cv.h>
+
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
+
+void sleep(unsigned int time){
+    std::this_thread::sleep_for(std::chrono::milliseconds(time));
+}
+
+using namespace vizdoom;
+using namespace std;
+using namespace cv;
+
+int main()
+{
+    Ptr <FeatureDetector> detector = ORB::create(10000);
+
+    std::cout << "\n\nBASIC EXAMPLE\n\n";
+
+    // Create DoomGame instance. It will run the game and communicate with you.
+    DoomGame *game = new DoomGame();
+    game->loadConfig("basic1.cfg");
+    game->init();
+
+    // Define some actions. Each list entry corresponds to declared buttons:
+    // MOVE_LEFT, MOVE_RIGHT, ATTACK
+    // game.getAvailableButtonsSize() can be used to check the number of available buttons.
+    // more combinations are naturally possible but only 3 are included for transparency when watching.
+    std::vector<double> actions[3];
+    actions[0] = {0, 1, 0,};
+    actions[1] = {0, 0, 1,};
+    actions[2] = {1, 0, 0,};
+
+    std::srand(time(0));
+
+    // Run this many episodes
+    int episodes = 20;
+
+    // Sets time that will pause the engine after each action.
+    // Without this everything would go too fast for you to keep track of what's happening.
+    unsigned int sleepTime = 1000 / DEFAULT_TICRATE; // = 28
+
+    Mat prev(480, 640, CV_8UC3), next(480, 640, CV_8UC3);
+    float sum = 0;
+
+    for (int i = 0; i < episodes; ++i) {
+
+        std::cout << "Episode #" << i + 1 << "\n";
+
+        // Starts a new episode. It is not needed right after init() but it doesn't cost much and the loop is nicer.
+        game->newEpisode();
+        while (!game->isEpisodeFinished()) {
+
+            // Get the state
+            GameStatePtr state = game->getState(); // GameStatePtr is std::shared_ptr<GameState>
+
+            // Which consists of:
+            unsigned int n              = state->number;
+            std::vector<double> vars    = state->gameVariables;
+            BufferPtr screenBuf         = state->screenBuffer;
+            BufferPtr depthBuf          = state->depthBuffer;
+            BufferPtr labelsBuf         = state->labelsBuffer;
+            BufferPtr automapBuf        = state->automapBuffer;
+            // BufferPtr is std::shared_ptr<Buffer> where Buffer is std::vector<uint8_t>
+            std::vector<Label> labels   = state->labels;
+
+            for(int k = 0; k < next.rows; ++k) {
+                for (int j = 0; j < next.cols; ++j) {
+                    auto vectorCoord = 3 * (k * next.cols + j);
+
+                    next.at<uchar>(k, 3 * j) = (*screenBuf)[vectorCoord + 2];
+                    next.at<uchar>(k, 3 * j + 1) = (*screenBuf)[vectorCoord + 1];
+                    next.at<uchar>(k, 3 * j + 2) = (*screenBuf)[vectorCoord];
+                }
+            }
+
+            if(game->getEpisodeTime() < 15)
+                double reward = game->makeAction(actions[0]);
+
+            /*vector<DMatch> matches;
+            BFMatcher matcher(NORM_L2, true);
+            matcher.match(descriptor1, descriptor2, matches);*/
+
+                Mat diffImage;
+
+                absdiff(prev, next, diffImage);
+
+                prev = next.clone();
+
+                Mat foregroundMask = Mat::zeros(diffImage.rows, diffImage.cols, CV_8UC3);
+
+                double threshold = 81, dist;
+
+                for (int k = 0; k < diffImage.rows; ++k) {
+                    for (int j = 0; j < diffImage.cols; ++j) {
+
+                        dist = sqrt(diffImage.at<unsigned char>(k, 3 * j) * diffImage.at<unsigned char>(k, 3 * j) +
+                                    foregroundMask.at<unsigned char>(k, 3 * j + 1) *
+                                    foregroundMask.at<unsigned char>(k, 3 * j + 1) +
+                                    foregroundMask.at<unsigned char>(k, 3 * j + 2) *
+                                    foregroundMask.at<unsigned char>(k, 3 * j + 2));
+
+                        if (dist > threshold) {
+                            foregroundMask.at<unsigned char>(k, 3 * j) = 255;
+                            foregroundMask.at<unsigned char>(k, 3 * j + 1) = 255;
+                            foregroundMask.at<unsigned char>(k, 3 * j + 2) = 255;
+                        }
+                    }
+                }
+
+
+                Mat1b img;
+                cvtColor(foregroundMask, img, CV_BGR2GRAY);
+
+                //imshow("img", img);
+               // waitKey(20);
+
+                vector<Point> pts;
+                findNonZero(img, pts);
+
+                if (pts.size() < 1000) {
+
+                    //cout << pts.size() << endl;
+
+                    int euclidean_distance = 40;
+
+                    std::vector<int> label;
+
+                    int th2 = euclidean_distance * euclidean_distance;
+                    int n_labels = cv::partition(pts, label, [th2](const Point &lhs, const Point &rhs) {
+                            return ((lhs.x - rhs.x) * (lhs.x - rhs.x) + (lhs.y - rhs.y) * (lhs.y - rhs.y)) < th2;
+                        }
+                    );
+
+                    vector<vector<Point>> clusters(n_labels);
+                    vector<Point> centroids(n_labels, Point(0,0));
+
+                    for (int i = 0; i < pts.size(); ++i)
+                    {
+                        clusters[label[i]].push_back(pts[i]);
+                        centroids[label[i]] += pts[i];
+                    }
+
+                    for (int i = 0; i < n_labels; ++i)
+                    {
+                        centroids[i].x /= clusters[i].size();
+                        centroids[i].y /= clusters[i].size();
+                    }
+
+                    vector<Vec3b> colors;
+                    for (int i = 0; i < n_labels; ++i)
+                    {
+                        colors.push_back(Vec3b(rand() & 255, rand() & 255, rand() & 255));
+                    }
+
+                    Mat3b res(img.rows, img.cols, Vec3b(0, 0, 0));
+                    for (int i = 0; i < pts.size(); ++i)
+                    {
+                        res(pts[i]) = colors[label[i]];
+                    }
+
+                    for (int i = 0; i < n_labels; ++i)
+                    {
+                        circle(res, centroids[i], 3, Scalar(colors[i][0], colors[i][1], colors[i][2]), CV_FILLED);
+                        circle(res, centroids[i], 6, Scalar(255 - colors[i][0], 255 - colors[i][1], 255 - colors[i][2]));
+
+                    }
+
+                    int y = 0, x = 0;
+
+                    if (n_labels >= 1)
+                    {
+                        auto a = centroids[0].x;
+                        auto b = centroids[0].y;
+
+                        //cout << a << " " << b << endl;
+                        x = a;
+                        y = b;
+                    }
+
+                    int mobrad = abs(x - 320);
+
+                    if ((y <= 240) && (game->getEpisodeTime() >= 15)) {
+                        if (x - 320 > 0) {
+                            double reward = game->makeAction(actions[1]);
+                            if ((mobrad <= 13) && (x != 0) && (x - 320 >= 0)) { double reward = game->makeAction(actions[2]); }
+                        } else {
+                            double reward = game->makeAction(actions[0]);
+                            if ((mobrad <= 13) && (x != 0) && (x - 320 <= 0)) { double reward = game->makeAction(actions[2]); }
+                        }
+                    }
+                    //cout << x << endl;
+
+                    imshow("res", res);
+                    waitKey(10);
+
+                    // You can also get last reward by using this function
+                    // double reward = game->getLastReward();
+
+                    // Makes a "prolonged" action and skip frames.
+                    //int skiprate = 4
+                    //double reward = game.makeAction(choice(actions), skiprate)
+
+                    // The same could be achieved with:
+                    //game.setAction(choice(actions))
+                    //game.advanceAction(skiprate)
+                    //reward = game.getLastReward()
+
+                    //std::cout << "State #" << n << "\n";
+                    //std::cout << "Game variables: " << vars[0] << "\n";
+                    //std::cout << "Action reward: " << reward << "\n";
+                    //std::cout << "=====================\n";
+            }
+
+            if(sleepTime) sleep(sleepTime);
+        }
+
+        std::cout << "Episode finished.\n";
+        std::cout << "Total reward: " << game->getTotalReward() << "\n";
+        std::cout << "************************\n";
+        sum += game->getTotalReward();
+    }
+    cout << sum / 20;
+    // It will be done automatically in destructor but after close You can init it again with different settings.
+    game->close();
+    delete game;
+}

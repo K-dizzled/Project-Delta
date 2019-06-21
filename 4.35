@@ -1,4 +1,4 @@
-include <ViZDoom.h>
+#include <ViZDoom.h>
 #include <iostream>
 #include <vector>
 #include <cstdlib>

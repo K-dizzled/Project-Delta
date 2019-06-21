@@ -26,4 +26,4 @@ M = [0, 0, 255, 0, 0, 255,
  
             return are_points_close;
         }
-    };
+    );
